@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environment
+.env
+venv/
+env/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Playwright
+.playwright-expense-automation/
+
+# Application specific
+screenshots/*.png
+!screenshots/.gitkeep
+receipts/*
+!receipts/.gitkeep
+
+# Sensitive
+config.yaml
+

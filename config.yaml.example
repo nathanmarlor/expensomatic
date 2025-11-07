@@ -1,0 +1,12 @@
+# Expensomatic Configuration
+base_url: "https://your-instance.lightning.force.com"
+login_url: "https://your-instance.lightning.force.com/lightning/page/home"
+project_id: "YOUR_PROJECT_ID_HERE"
+
+# OpenAI API Key
+openai_api_key: "YOUR_OPENAI_API_KEY_HERE"
+
+# Screenshot Settings
+take_screenshots: true
+screenshot_dir: "screenshots"
+
