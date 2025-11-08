@@ -37,7 +37,7 @@ class Expensomatic:
         'Other': 'a08Tl00000KnFX6IAN',
     }
     
-    CURRENCY_SYMBOLS = {'GBP': '£', 'USD': '$', 'EUR': '€'}
+    CURRENCY_SYMBOLS = {'GBP': '£', 'USD': '$', 'EUR': '€', 'INR': '₹', 'CHF': 'CHF'}
     
     def __init__(self, config_path: str = "config.yaml"):
         with open(config_path, 'r') as f:
@@ -83,6 +83,38 @@ class Expensomatic:
             if "poppler" in str(e).lower():
                 print("   Install poppler: brew install poppler")
             return None
+    
+    def adjust_date_if_too_old(self, date_str: str) -> tuple[str, bool]:
+        """Check if date is older than max_days_old and adjust if needed
+        
+        Returns:
+            tuple: (adjusted_date_str, was_adjusted)
+        """
+        if not date_str:
+            return date_str, False
+        
+        override_enabled = self.config.get('override_old_dates', True)
+        max_days = self.config.get('max_days_old', 30)
+        
+        if not override_enabled:
+            return date_str, False
+        
+        try:
+            from datetime import datetime as dt, timedelta
+            receipt_date = dt.strptime(date_str, '%Y-%m-%d')
+            today = dt.now()
+            days_old = (today - receipt_date).days
+            
+            if days_old > max_days:
+                # Set to exactly max_days ago
+                adjusted_date = today - timedelta(days=max_days)
+                adjusted_date_str = adjusted_date.strftime('%Y-%m-%d')
+                return adjusted_date_str, True
+            
+            return date_str, False
+            
+        except Exception:
+            return date_str, False
     
     def analyze_receipt_with_openai(self, image_path: str) -> Optional[Dict]:
         """Analyze receipt (image or PDF) using OpenAI Vision API"""
@@ -145,8 +177,19 @@ Respond ONLY with valid JSON in this exact format:
             result = json.loads(result_text)
             result['currency'] = result.get('currency', 'GBP').upper()
             
-            symbol = self.CURRENCY_SYMBOLS.get(result['currency'], result['currency'])
-            print(f"✓ {symbol}{result['amount']} | {result['category']} | {result.get('date', 'N/A')}")
+            # Adjust date if too old
+            if 'date' in result:
+                adjusted_date, was_adjusted = self.adjust_date_if_too_old(result['date'])
+                result['date'] = adjusted_date
+                
+                symbol = self.CURRENCY_SYMBOLS.get(result['currency'], result['currency'])
+                date_display = f"{result.get('date', 'N/A')}"
+                if was_adjusted:
+                    date_display += " (adjusted)"
+                print(f"✓ {symbol}{result['amount']} | {result['category']} | {date_display}")
+            else:
+                symbol = self.CURRENCY_SYMBOLS.get(result['currency'], result['currency'])
+                print(f"✓ {symbol}{result['amount']} | {result['category']} | {result.get('date', 'N/A')}")
             
             return result
             
@@ -342,6 +385,9 @@ Respond ONLY with valid JSON in this exact format:
                 print(f"   Add images: {', '.join(image_extensions)}")
                 return
             
+            # Sort receipts alphabetically by filename for consistent processing order
+            receipt_files.sort(key=lambda p: p.name.lower())
+            
             print(f"\n📸 Found {len(receipt_files)} receipt(s)")
             
             # Process in batches of 15
@@ -353,8 +399,21 @@ Respond ONLY with valid JSON in this exact format:
             
             print("=" * 60)
             
-            # Analyze all receipts first (before opening browser)
-            all_batches = []
+            # Create failed folder for receipts that can't be analyzed
+            failed_dir = receipts_dir / 'failed'
+            failed_dir.mkdir(exist_ok=True)
+            failed_receipts = []
+            
+            # Open browser once at the start
+            print("\n" + "=" * 60)
+            print("🌐 Opening browser...")
+            print("=" * 60)
+            await self.init_browser()
+            await self.check_login()
+            
+            batches_submitted = 0
+            
+            # Process each batch: analyze then submit immediately
             for batch_num in range(num_batches):
                 start_idx = batch_num * 15
                 end_idx = min(start_idx + 15, total_receipts)
@@ -385,29 +444,24 @@ Respond ONLY with valid JSON in this exact format:
                             'category_id': category_id,
                         })
                     else:
-                        print(f"   ⚠️  Skipping - analysis failed")
+                        print(f"   ⚠️  Analysis failed - moving to failed/")
+                        # Move failed receipt to failed folder
+                        try:
+                            failed_path = failed_dir / receipt_path.name
+                            receipt_path.rename(failed_path)
+                            failed_receipts.append(receipt_path.name)
+                            print(f"   ✓ Moved to: failed/{receipt_path.name}")
+                        except Exception as e:
+                            print(f"   ❌ Could not move file: {e}")
                 
-                if expenses:
-                    print(f"\n✓ Analyzed {len(expenses)} expenses")
-                    all_batches.append(expenses)
-                else:
-                    print(f"\n⚠️  No valid expenses in this batch")
-            
-            if not all_batches:
-                print("\n❌ No expenses to submit")
-                return
-            
-            # Now open browser and create claims
-            print("\n" + "=" * 60)
-            print("🌐 Opening browser...")
-            print("=" * 60)
-            await self.init_browser()
-            await self.check_login()
-            
-            # Create expense claims for each batch
-            for batch_num, expenses in enumerate(all_batches, 1):
+                if not expenses:
+                    print(f"\n⚠️  No valid expenses in this batch, skipping submission")
+                    continue
+                
+                # Submit this batch immediately
+                print(f"\n✓ Analyzed {len(expenses)} expenses")
                 print(f"\n{'=' * 60}")
-                print(f"📋 BATCH {batch_num}/{len(all_batches)} - Creating claim")
+                print(f"📋 BATCH {batch_num + 1}/{num_batches} - Creating claim")
                 print("=" * 60)
                 for i, exp in enumerate(expenses, 1):
                     symbol = self.CURRENCY_SYMBOLS.get(exp.get('currency', 'GBP'), exp.get('currency', 'GBP'))
@@ -428,10 +482,30 @@ Respond ONLY with valid JSON in this exact format:
                     receipt_path.rename(new_path)
                     print(f"   ✓ Moved: {receipt_path.name}")
                 
+                batches_submitted += 1
                 print(f"\n✓ Batch {batch_num + 1} completed!")
+                
+                # Manual confirmation before proceeding to next batch
+                if batch_num + 1 < num_batches:  # Don't prompt after the last batch
+                    print("\n" + "=" * 60)
+                    print("⏸️  MANUAL CONFIRMATION REQUIRED")
+                    print("=" * 60)
+                    print(f"Please verify that Batch {batch_num + 1} was saved successfully in the browser.")
+                    print(f"Remaining: {num_batches - (batch_num + 1)} batch(es)")
+                    print("\nPress Enter to continue to the next batch, or Ctrl+C to stop...")
+                    input()
+                    print("✓ Continuing to next batch...\n")
+            
+            if batches_submitted == 0:
+                print("\n❌ No batches were submitted (all receipts failed analysis)")
+                return
             
             print("\n" + "=" * 60)
-            print("✓ All batches completed!")
+            print(f"✓ All batches completed! ({batches_submitted} submitted)")
+            if failed_receipts:
+                print(f"\n⚠️  {len(failed_receipts)} receipt(s) failed analysis and were moved to failed/:")
+                for failed_name in failed_receipts:
+                    print(f"   - {failed_name}")
             print("=" * 60)
             
             print("\nBrowser open for 30s...")

@@ -10,3 +10,9 @@ openai_api_key: "YOUR_OPENAI_API_KEY_HERE"
 take_screenshots: true
 screenshot_dir: "screenshots"
 
+# Date Override Settings
+# Expenses older than 30 days may not be allowed
+# Set to true to automatically adjust old dates to 30 days ago
+override_old_dates: true
+max_days_old: 30
+
